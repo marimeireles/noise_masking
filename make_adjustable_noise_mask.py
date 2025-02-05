@@ -13,11 +13,14 @@ import sys
 import time
 from datetime import datetime
 
+
 if sys.platform.startswith("linux"):
     import pulsectl
 
 # Global variable to store the noise process (if any)
 noise_process = None
+t = time.localtime()
+time_str = f"{t.tm_year}_{t.tm_mon}_{t.tm_mday}_{t.tm_hour}_{t.tm_min}"
 
 def signal_handler(sig, frame):
     raise KeyboardInterrupt
