@@ -16,16 +16,13 @@ from datetime import datetime
 if sys.platform.startswith("linux"):
     import pulsectl
 
+# Global variable to store the noise process (if any)
+noise_process = None
 
-# This function handles graceful exit when Ctrl+C is pressed.
 def signal_handler(sig, frame):
-    print("Exiting gracefully...")
-    subprocess.run("killall play", shell=True)
-    sys.exit(0)
-
+    raise KeyboardInterrupt
 
 signal.signal(signal.SIGINT, signal_handler)
-
 
 def get_system_volume():
     result = subprocess.run(["amixer", "sget", "Master"], stdout=subprocess.PIPE)
@@ -96,25 +93,42 @@ def set_volume(volume_percentage, is_muted, pulse, sox_sink_input):
     pulse.volume_set(sox_sink_input, new_volume_info)
 
 
+def identify_os():
+    if sys.platform.startswith("darwin"):
+        return "OS X (macOS)"
+    elif sys.platform.startswith("linux"):
+        return "Linux"
+    else:
+        return "Unsupported OS, feel free to open an issue here https://github.com/morganrivers/noise_masking"
+
+
 def play_noise_osx(mean, standard_deviation, volume_dB):
-    """Play noise using sox with specified parameters and return the subprocess."""
+    """Play noise using sox with specified parameters and wait until termination."""
+    global noise_process
     volume_adjustment = volume_dB  # Use the calculated volume or set a preferred level
     command = f"play -n synth noise band {mean} {standard_deviation} vol {volume_adjustment}dB"
     print("Playing noise. Press Ctrl+C to stop.")
-    process = subprocess.Popen(command, shell=True)
-    print("process.pid: ", process.pid)
-    return process
+    # Launch the noise process in its own process group so we can kill it later
+    noise_process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
+    try:
+        # Wait for the process to complete (it normally runs indefinitely)
+        noise_process.wait()
+    except KeyboardInterrupt:
+        # If interrupted, kill the entire process group of noise_process
+        try:
+            os.killpg(os.getpgid(noise_process.pid), signal.SIGTERM)
+        except Exception as e:
+            print("Error terminating noise process:", e)
+        raise
 
-
-# Function to play noise and adjust its volume based on system volume
 def play_and_adjust_volume(mean, standard_deviation, initial_volume_dB):
+    global noise_process
     with pulsectl.Pulse("volume-adjuster") as pulse:
         volume_percentage, is_muted = get_system_volume()  # Get initial system volume
 
-        # Give some time in case a previous play command is still lingering
-        time.sleep(0.2)
+        time.sleep(0.2)  # small pause
 
-        # Check if the SOX process exists in the pulse audio list
+        # Check if the SOX process exists in PulseAudio
         sox_sink_input = next(
             (
                 si
@@ -126,20 +140,14 @@ def play_and_adjust_volume(mean, standard_deviation, initial_volume_dB):
 
         # If the SOX process isn't already playing, start it
         if not sox_sink_input:
-            # reduce by 10db... it's a bit too loud generally without doing this
             reduced_volume = initial_volume_dB - 20
-
-            # This actually renders the noise using the sox package.
-            # Eliminating loud noise at beginning from previous command:
-            #     play -n synth noise band {mean} {standard_deviation} vol {initial_volume_dB}dB > /dev/null 2>&1
-            command = f"play -n trim 0.0 2.0 : synth noise band {mean} {standard_deviation} \
-                        vol {reduced_volume}dB \
-                        > /dev/null 2>&1"  # don't show errors or stdout
-
-            subprocess.Popen(command, shell=True)
-
-            time.sleep(0.2)  # Give time for the new play process to show up
-
+            command = (
+                f"play -n trim 0.0 2.0 : synth noise band {mean} {standard_deviation} "
+                f"vol {reduced_volume}dB > /dev/null 2>&1"
+            )
+            # Launch with its own process group.
+            noise_process = subprocess.Popen(command, shell=True, preexec_fn=os.setsid)
+            time.sleep(0.2)
             sox_sink_input = next(
                 (
                     si
@@ -148,92 +156,80 @@ def play_and_adjust_volume(mean, standard_deviation, initial_volume_dB):
                 ),
                 None,
             )
-
             if not sox_sink_input:
                 print("Couldn't find sox stream in PulseAudio.")
                 return
 
-        # Get the initial volume of the SOX process
-        initial_sink_volume = sox_sink_input.volume.value_flat
-
-        # Set the playback volume based on the system volume
+        # Set the playback volume based on the system volume initially.
         set_volume(volume_percentage, is_muted, pulse, sox_sink_input)
 
-        # Continuously adjust the playback volume based on system volume
-        while True:
-            volume_percentage, is_muted = get_system_volume()
-            set_volume(volume_percentage, is_muted, pulse, sox_sink_input)
-            time.sleep(0.5)
-
-
-def identify_os():
-    if sys.platform.startswith("darwin"):
-        return "OS X (macOS)"
-    elif sys.platform.startswith("linux"):
-        return "Linux"
-    else:
-        return "Unsupported OS, feel free to open an issue here https://github.com/morganrivers/noise_masking"
-
+        # Continuously adjust playback volume until interrupted.
+        try:
+            while True:
+                volume_percentage, is_muted = get_system_volume()
+                set_volume(volume_percentage, is_muted, pulse, sox_sink_input)
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("Exiting volume-adjust loop.")
+            # Kill the noise process if it's running.
+            if noise_process:
+                try:
+                    os.killpg(os.getpgid(noise_process.pid), signal.SIGTERM)
+                except Exception as e:
+                    print("Error terminating noise process:", e)
+            raise
 
 def main():
-    # Check OS validity
-    identify_os()
-
-    # Create data directory if it doesn't exist
-    if not os.path.exists("data"):
-        os.makedirs("data")
-    if os.path.isfile("data/data.txt"):
-        while True:
-            user_input = input("Record new audio or use the old one? [r/o]\n")
-            if user_input == "r":
-                if sys.platform.startswith("darwin"):
-                    record_audio_osx()
+    try:
+        # (OS detection, directory creation, recording, spectrogram, etc.)
+        if not os.path.exists("data"):
+            os.makedirs("data")
+        if os.path.isfile("data/data.txt"):
+            while True:
+                user_input = input("Record new audio or use the old one? [r/o]\n")
+                if user_input == "r":
+                    if sys.platform.startswith("darwin"):
+                        record_audio_osx()
+                    elif sys.platform.startswith("linux"):
+                        record_audio()
                     break
-                elif sys.platform.startswith("linux"):
-                    record_audio()
+                elif user_input == "o":
+                    print("Using old audio...")
                     break
-            elif user_input == "o":
-                print("Using old audio...")
-                break
-            else:
-                print(
-                    'You didn\'t type "r" for record or "o" for old. Please try again.'
-                )
-    else:
-        record_audio()
+                else:
+                    print('Type "r" for record or "o" for old. Please try again.')
+        else:
+            record_audio()
 
-    # Generate spectrogram and fetch audio statistics
-    generate_spectrogram()
-    fetch_audio_stats()
+        generate_spectrogram()
+        fetch_audio_stats()
 
-    # Calculate statistics for noise generation
-    frequency, amplitude = np.loadtxt("data/data.txt", unpack=True)
-    mean_amplitude = np.mean(amplitude)
-    volume_dB = 10 * np.log10(mean_amplitude)
-
-    # Check if the sum of amplitude is zero
-    if np.sum(amplitude) == 0:
-        raise ValueError(
-            "Error: The microphone was not turned on or there's no audio input signal."
-        )
-    else:
+        frequency, amplitude = np.loadtxt("data/data.txt", unpack=True)
+        mean_amplitude = np.mean(amplitude)
+        volume_dB = 10 * np.log10(mean_amplitude)
+        if np.sum(amplitude) == 0:
+            raise ValueError("Error: No audio input signal.")
         mean = np.average(frequency, weights=amplitude)
+        standard_deviation = np.sqrt(np.average((frequency - mean) ** 2, weights=amplitude))
 
-    standard_deviation = np.sqrt(np.average((frequency - mean) ** 2, weights=amplitude))
+        print("\nMean Frequency:", mean)
+        print("Standard Deviation:", standard_deviation)
+        print("Volume (dB):", volume_dB)
+        print("Press Ctrl+C to exit gracefully.")
 
-    # Print the calculated values
-    print("\nMean Frequency:", mean)
-    print("Standard Deviation:", standard_deviation)
-    print("Volume (dB):", volume_dB)
-    print("")
-    print("Please use Control + c or other SIGINT to exit gracefully.")
-
-    # Play the noise and adjust volume
-    if sys.platform.startswith("darwin"):
-        play_noise_osx(mean, standard_deviation, volume_dB)
-    elif sys.platform.startswith("linux"):
-        play_and_adjust_volume(mean, standard_deviation, volume_dB)
-
+        if sys.platform.startswith("darwin"):
+            play_noise_osx(mean, standard_deviation, volume_dB)
+        elif sys.platform.startswith("linux"):
+            play_and_adjust_volume(mean, standard_deviation, volume_dB)
+    except KeyboardInterrupt:
+        print("\nExiting gracefully...")
+        # As a fallback, try to kill any leftover noise processes.
+        if noise_process:
+            try:
+                os.killpg(os.getpgid(noise_process.pid), signal.SIGTERM)
+            except Exception as e:
+                print("Error terminating noise process during exit:", e)
+        sys.exit(0)
 
 if __name__ == "__main__":
     main()
