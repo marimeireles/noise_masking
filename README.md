@@ -2,7 +2,7 @@
 
 This script records audio, generates a spectrogram, fetches audio statistics, and plays back audio with adjusted volume in real-time based on the system volume. It's great for blocking voices at coffee shops and communal spaces, but it doesn't have to be very loud as it focuses the audio only on the frequency range that is the loudest in the environment. It works great in combination with noise-cancelling headphones.
 
-WATCH OUT FOR YOUR EARS RUNNING THE SCRIPT THE FIRST TIME! IT MIGHT BE LOUD
+WATCH OUT FOR YOUR EARS RUNNING THE SCRIPT THE FIRST TIME! IT MIGHT BE LOUD 
 
 ## Requirements
 
@@ -33,16 +33,15 @@ sudo apt-get install sox alsa-utils
 
 ### OSx
 
-Make sure you have `sox`:
+Make sure you have `sox` on:
 
 ```bash
+# Get sox with brew
 brew install sox
 
 # Install required Python libraries
 pip3 install numpy matplotlib pulsectl
 ```
-
-OSx users can't exit gracefuly. To exist use a `SIGTERM` application and copy the `pid` printed in the terminal.
 
 
 ### Other Operating Systems
@@ -72,4 +71,4 @@ It adjusts to alterations of system volume every half second.
 
 Ensure the `amixer` and `sox` utilities are correctly set up and configured for your audio hardware for the script to function as expected.
 
-It's only been tested on my machine... you might need to fine-tune the script a bit for your system and audio devices.
+It's only been tested on our machines... you might need to fine-tune the script a bit for your system and audio devices.
