@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 if sys.platform.startswith("linux"):
     import pulsectl
@@ -44,8 +45,9 @@ def set_system_volume(volume):
 
 
 def record_audio(duration=10):
-    subprocess.run(f"arecord -d {duration} -f cd data/input.wav", shell=True)
+    subprocess.run(f"sox -d data/input.wav trim 0 {duration}", shell=True)
     # copy as a record for the future
+    time_str = str(datetime.now().timestamp())
     shutil.copy("data/input.wav", f"data/input_{time_str}.wav")
 
 
